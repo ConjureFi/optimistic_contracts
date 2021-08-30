@@ -34,14 +34,14 @@ contract OpenOracleFramework {
         uint256 timestamp;
     }
 
+    // stores historical values of feeds
+    mapping(uint256 => mapping(uint256 => uint256)) private historicalFeeds;
+
     // indicates if sender is a signer
     mapping(address => bool) private isSigner;
 
     // mapping to store the actual submitted values per FeedId, per round number
     mapping(uint256 => mapping(uint256 => mapping(address => feedRoundStruct))) private feedRoundNumberToStructMapping;
-
-    // indicates if address si subscribed to a feed
-    mapping(address => mapping(uint256 => uint256)) private subscribedTo;
 
     struct oracleStruct {
         string feedName;
@@ -55,11 +55,6 @@ contract OpenOracleFramework {
     }
 
     oracleStruct[] private feedList;
-
-    // indicates if oracle subscription is turned on. 0 indicates no pass
-    uint256 public subscriptionPassPrice;
-
-    mapping(address => uint256) private hasPass;
 
     struct proposalStruct {
         uint256 uintValue;
@@ -94,7 +89,6 @@ contract OpenOracleFramework {
     event newPayoutAddress(address payout);
     event newRevenueMode(uint256 mode, uint256 feed);
     event newFeedCost(uint256 cost, uint256 feed);
-    event subscriptionPassPriceUpdated(uint256 newPass);
 
     // only Signer modifier
     modifier onlySigner {
@@ -109,7 +103,7 @@ contract OpenOracleFramework {
 
     constructor() {
         // Don't allow implementation to be initialized.
-        factoryContract = address(1);
+        //factoryContract = address(1);
     }
 
     function initialize(
@@ -136,7 +130,6 @@ contract OpenOracleFramework {
 
         signerLength = signers_.length;
         payoutAddress = payoutAddress_;
-        subscriptionPassPrice = subscriptionPassPrice_;
 
         emit contractSetup(signers_, signerThreshold, payoutAddress);
     }
@@ -183,6 +176,22 @@ contract OpenOracleFramework {
 
     //---------------------------view functions ---------------------------
 
+    function getHistoricalFeeds(uint256[] memory feedIDs, uint256[] memory timestamps) external view returns (uint256[] memory) {
+
+        uint256 feedLen = feedIDs.length;
+        uint256[] memory returnPrices = new uint256[](feedLen);
+        require(feedIDs.length == timestamps.length, "Feeds and Timestamps must match");
+
+        for (uint i = 0; i < feedIDs.length; i++) {
+
+            uint256 roundNumber = timestamps[i] / feedList[feedIDs[i]].feedTimeslot;
+            returnPrices[i] =  historicalFeeds[feedIDs[i]][roundNumber];
+        }
+
+        return (returnPrices);
+    }
+
+
     /**
     * @dev getFeeds function lets anyone call the oracle to receive data (maybe pay an optional fee)
     *
@@ -212,18 +221,6 @@ contract OpenOracleFramework {
         uint256 returnPrice;
         uint256 returnTimestamp;
         uint256 returnDecimals;
-
-        if (subscriptionPassPrice > 0) {
-            if (hasPass[msg.sender] <= block.timestamp) {
-                if (feedList[feedID].revenueMode == 1 && subscribedTo[msg.sender][feedID] < block.timestamp) {
-                    revert("No subscription to feed");
-                }
-            }
-        } else {
-            if (feedList[feedID].revenueMode == 1 && subscribedTo[msg.sender][feedID] < block.timestamp) {
-                revert("No subscription to feed");
-            }
-        }
 
         returnPrice = feedList[feedID].latestPrice;
         returnTimestamp = feedList[feedID].latestPriceUpdate;
@@ -357,6 +354,9 @@ contract OpenOracleFramework {
                 }
 
                 // process the struct for storing
+                if (block.timestamp / feedList[feedIDs[i]].feedTimeslot > feedList[feedIDs[i]].latestPriceUpdate / feedList[feedIDs[i]].feedTimeslot) {
+                    historicalFeeds[feedIDs[i]][feedList[feedIDs[i]].latestPriceUpdate / feedList[feedIDs[i]].feedTimeslot] = feedList[feedIDs[i]].latestPrice;
+                }
                 feedList[feedIDs[i]].latestPriceUpdate = block.timestamp;
                 feedList[feedIDs[i]].latestPrice = returnPrice;
             }
@@ -379,9 +379,7 @@ contract OpenOracleFramework {
 
         // execute proposal
         if (signedProposalLen >= signerThreshold) {
-            if (proposalList[proposalId].proposalType == 0) {
-                updatePricePass(proposalList[proposalId].uintValue);
-            } else if (proposalList[proposalId].proposalType == 1) {
+            if (proposalList[proposalId].proposalType == 1) {
                 updateThreshold(proposalList[proposalId].uintValue);
             } else if (proposalList[proposalId].proposalType == 2) {
                 addSigners(proposalList[proposalId].addressValue);
@@ -440,12 +438,6 @@ contract OpenOracleFramework {
         emit proposalSigned(proposalArrayLen, msg.sender);
     }
 
-    function updatePricePass(uint256 newPricePass) private {
-        subscriptionPassPrice = newPricePass;
-
-        emit subscriptionPassPriceUpdated(newPricePass);
-    }
-
     function updateRevenueMode(uint256 newRevenueModeValue, uint256 feedId ) private {
         require(newRevenueModeValue <= 1, "Invalid argument for revenue Mode");
         feedList[feedId].revenueMode = newRevenueModeValue;
@@ -498,49 +490,5 @@ contract OpenOracleFramework {
                 emit signerRemoved(toRemove);
             }
         }
-    }
-
-    //---------------------------subscription functions---------------------------
-
-    function subscribeToFeed(uint256[] memory feedIDs, uint256[] memory durations, address buyer) payable external {
-        require(feedIDs.length == durations.length, "Length mismatch");
-
-        uint256 total;
-        for (uint i = 0; i < feedIDs.length; i++) {
-            require(feedList[feedIDs[i]].revenueMode == 1, "Donation mode turned on");
-            require(durations[i] >= 3600, "Minimum subscription is 1h");
-
-            if (subscribedTo[buyer][feedIDs[i]] <=block.timestamp) {
-                subscribedTo[buyer][feedIDs[i]] = block.timestamp.add(durations[i]);
-            } else {
-                subscribedTo[buyer][feedIDs[i]] = subscribedTo[buyer][feedIDs[i]].add(durations[i]);
-            }
-
-            total += feedList[feedIDs[i]].feedCost * durations[i] / 3600;
-        }
-
-        // check if enough payment was sent
-        require(msg.value >= total, "Not enough funds sent to cover oracle fees");
-
-        // send feeds to router
-        address payable conjureRouter = IConjureFactory(factoryContract).getConjureRouter();
-        IConjureRouter(conjureRouter).deposit{value:msg.value/50}();
-        emit routerFeeTaken(msg.value/50, msg.sender);
-    }
-
-    function buyPass(address buyer, uint256 duration) payable external {
-        require(subscriptionPassPrice != 0, "Subscription Pass turned off");
-        require(duration >= 3600, "Minimum subscription is 1h");
-        require(msg.value >= subscriptionPassPrice * duration / 86400, "Not enough payment");
-
-        if (hasPass[buyer] <=block.timestamp) {
-            hasPass[buyer] = block.timestamp.add(duration);
-        } else {
-            hasPass[buyer] = hasPass[buyer].add(duration);
-        }
-
-        address payable conjureRouter = IConjureFactory(factoryContract).getConjureRouter();
-        IConjureRouter(conjureRouter).deposit{value:msg.value/50}();
-        emit routerFeeTaken(msg.value/50, msg.sender);
     }
 }

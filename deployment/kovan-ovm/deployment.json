@@ -37,9 +37,9 @@
 		},
         "OpenOracleFramework": {
 			"name": "OpenOracleFramework",
-			"address": "0x7c7E07873F2080Bd40262e68C9A502e67e91286f",
+			"address": "0x32745acA64401Bb4b100bc8539D4B1097EE4C7Ce",
 			"source": "OpenOracleFramework",
-			"link": "https://kovan-optimistic.etherscan.io/address/0x7c7E07873F2080Bd40262e68C9A502e67e91286f#code",
+			"link": "https://kovan-optimistic.etherscan.io/address/0x32745acA64401Bb4b100bc8539D4B1097EE4C7Ce#code",
 			"network": "kovan"
 		},
         "ConjureRouter": {
